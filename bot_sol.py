@@ -8,15 +8,21 @@ import os
 from datetime import datetime
 from flask import Flask, jsonify, Response, request as freq
 
+# ── Configuracion ─────────────────────────────────────
 SIMBOLO        = "SOL/USDT"
 CAPITAL_INICIO = 100.0
 INTERVALO_SEG  = 5
-PUERTO         = int(os.environ.get("PORT", 8765))  # Railway usa PORT
-COMISION       = 0.001
-SL_PCT         = 0.006
-TP_PCT         = 0.012
+PUERTO         = int(os.environ.get("PORT", 8765))
+COMISION       = 0.001   # 0.1% Bitget spot
+SL_PCT         = 0.006   # Stop Loss 0.6%
+TP_PCT         = 0.012   # Take Profit 1.2%
 COOLDOWN_SEG   = 30
 
+# ── Modo: "spot" o "futuros" ──────────────────────────
+# Para futuros cambia a "futuros" y añade tus API keys de Bitget
+MODO = "spot"
+
+# ── Estado ────────────────────────────────────────────
 estado = {
     "precio": 0.0, "precio_max": 0.0, "precio_min": 9999999.0,
     "capital": CAPITAL_INICIO, "capital_inicio": CAPITAL_INICIO,
@@ -30,13 +36,15 @@ estado = {
     "inicio_ts": datetime.now().isoformat(),
     "inicio_ms": int(datetime.now().timestamp() * 1000),
     "ops_hoy": 0, "ops_total": 0,
+    "modo": MODO,
+    "exchange": "Bitget",
 }
 
 HTML = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>SOL Bot</title>
+<title>SOL Bot - Bitget</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -44,7 +52,7 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
 .top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap;gap:8px}
 .title{font-size:17px;font-weight:bold;letter-spacing:2px}.title span{color:#7c4dff}
 .subtitle{font-size:10px;color:#ff9100;margin-top:3px}
-.info-row{display:flex;gap:16px;font-size:11px;color:#606080;margin-top:4px;flex-wrap:wrap}
+.info-row{display:flex;gap:14px;font-size:11px;color:#606080;margin-top:4px;flex-wrap:wrap}
 .info-row span{color:#ffd740;font-weight:bold}
 .live{display:flex;align-items:center;gap:6px;font-size:11px;color:#00e676}
 .dot{width:8px;height:8px;border-radius:50%;background:#00e676;animation:blink 1s infinite}
@@ -89,6 +97,9 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
 .ll:last-child{border-bottom:none}
 .or{display:grid;grid-template-columns:50px 95px 1fr 65px 75px;gap:5px;font-size:10px;padding:4px 0;border-bottom:1px solid rgba(42,42,58,.3);align-items:center}
 .or:last-child{border-bottom:none}
+.modo-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:bold;margin-left:8px}
+.modo-spot{background:rgba(64,196,255,.15);color:#40c4ff;border:1px solid rgba(64,196,255,.3)}
+.modo-futuros{background:rgba(255,145,0,.15);color:#ff9100;border:1px solid rgba(255,145,0,.3)}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:#1a1a24}::-webkit-scrollbar-thumb{background:#2a2a3a;border-radius:2px}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(4,1fr)}.mid,.bot{grid-template-columns:1fr}}
 </style>
@@ -96,17 +107,20 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
 <body>
 <div class="top">
   <div>
-    <div class="title">SOL/<span>USDT</span> BOT ACTIVO</div>
+    <div class="title">SOL/<span>USDT</span> BOT
+      <span class="modo-badge" id="modo-badge">SPOT</span>
+      <span style="font-size:11px;color:#606080;margin-left:8px">via Bitget</span>
+    </div>
     <div class="subtitle">Scalping RSI | SL: -0.6% | TP: +1.2% | Tiempo real</div>
     <div class="info-row">
       <div>Activo: <span id="uptime">00:00:00</span></div>
       <div>Ops hoy: <span id="ops-hoy">0</span></div>
       <div>Total: <span id="ops-total">0</span></div>
-      <div>Max sesion: <span id="pmax" class="g">-</span></div>
-      <div>Min sesion: <span id="pmin" class="r">-</span></div>
+      <div>Max: <span id="pmax" class="g">-</span></div>
+      <div>Min: <span id="pmin" class="r">-</span></div>
     </div>
   </div>
-  <div class="live"><div class="dot"></div>PAPER TRADING EN VIVO</div>
+  <div class="live"><div class="dot"></div>PAPER TRADING</div>
 </div>
 
 <div class="cards">
@@ -128,7 +142,7 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
 
 <div class="cw">
   <div class="ch">
-    <div class="ctitle">SOL/USDT — Tiempo real via WebSocket &nbsp;<span style="color:#00e676;font-size:10px" id="ws-status">● conectando</span></div>
+    <div class="ctitle">SOL/USDT — Tiempo real &nbsp;<span style="color:#00e676;font-size:10px" id="ws-status">● conectando</span></div>
     <div class="tfs">
       <button class="tb active" onclick="ctf('1m')">1m</button>
       <button class="tb" onclick="ctf('5m')">5m</button>
@@ -148,8 +162,8 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
       <div><div class="pl">Valor ahora</div><div class="pv" id="pv2">-</div></div>
       <div><div class="pl">P&amp;G</div><div class="pv" id="ppct">-</div></div>
       <div><div class="pl">SOL comprados</div><div class="pv m" id="pcant">-</div></div>
-      <div><div class="pl">Stop Loss -0.6%</div><div class="pv r" id="psl">-</div></div>
-      <div><div class="pl">Take Profit +1.2%</div><div class="pv g" id="ptp">-</div></div>
+      <div><div class="pl">Stop Loss</div><div class="pv r" id="psl">-</div></div>
+      <div><div class="pl">Take Profit</div><div class="pv g" id="ptp">-</div></div>
     </div>
     <div id="pw" style="display:none">
       <div style="font-size:10px;color:#606080">SL → precio → TP</div>
@@ -181,125 +195,96 @@ body{background:#0a0a0f;color:#e8e8f0;font-family:monospace;padding:14px;font-si
 
 <script>
 let chart, candles, emaL;
-let tf = "1m", uLog = [], iTs = null, uM = 0, wsVela = null;
-let inicioMs = null; // timestamp inicio del bot para centrar grafico
+let tf="1m", uLog=[], iTs=null, uM=0, wsVela=null, inicioMs=null;
 
-function ic() {
-  const el = document.getElementById("chart");
-  chart = LightweightCharts.createChart(el, {
-    width: el.offsetWidth, height: 300,
-    layout: { background:{color:"#111118"}, textColor:"#9090b0" },
-    grid: { vertLines:{color:"#1a1a24"}, horzLines:{color:"#1a1a24"} },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    timeScale: { borderColor:"#2a2a3a", timeVisible:true, secondsVisible:true },
-    rightPriceScale: { borderColor:"#2a2a3a" },
+function ic(){
+  const el=document.getElementById("chart");
+  chart=LightweightCharts.createChart(el,{
+    width:el.offsetWidth,height:300,
+    layout:{background:{color:"#111118"},textColor:"#9090b0"},
+    grid:{vertLines:{color:"#1a1a24"},horzLines:{color:"#1a1a24"}},
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+    timeScale:{borderColor:"#2a2a3a",timeVisible:true,secondsVisible:true},
+    rightPriceScale:{borderColor:"#2a2a3a"},
   });
-  candles = chart.addCandlestickSeries({
-    upColor:"#00e676", downColor:"#ff1744",
-    borderUpColor:"#00e676", borderDownColor:"#ff1744",
-    wickUpColor:"#00e676", wickDownColor:"#ff1744"
-  });
-  emaL = chart.addLineSeries({ color:"#40c4ff", lineWidth:1, lineStyle:2 });
-  window.addEventListener("resize", () => chart.applyOptions({width:el.offsetWidth}));
+  candles=chart.addCandlestickSeries({upColor:"#00e676",downColor:"#ff1744",borderUpColor:"#00e676",borderDownColor:"#ff1744",wickUpColor:"#00e676",wickDownColor:"#ff1744"});
+  emaL=chart.addLineSeries({color:"#40c4ff",lineWidth:1,lineStyle:2});
+  window.addEventListener("resize",()=>chart.applyOptions({width:el.offsetWidth}));
 }
 
-// Convierte timeframe a segundos (para calcular cuantas velas mostrar desde inicio)
-function tfASegundos(t) {
-  return t==="1m"?60:t==="5m"?300:t==="15m"?900:t==="1h"?3600:14400;
+function tfSeg(t){return t==="1m"?60:t==="5m"?300:t==="15m"?900:t==="1h"?3600:14400;}
+
+function ctf(t){
+  tf=t;
+  document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("active",b.textContent===t));
+  if(wsVela){wsVela.close();wsVela=null;}
+  cargar(t);
 }
 
-function ctf(t) {
-  tf = t;
-  document.querySelectorAll(".tb").forEach(b => b.classList.toggle("active", b.textContent===t));
-  if (wsVela) { wsVela.close(); wsVela = null; }
-  cargarYConectar(t);
-}
-
-async function cargarYConectar(t) {
-  try {
-    const v = await fetch("/velas?tf="+t).then(r=>r.json());
-    if (!v || v.length < 2) return;
-
-    const velas = v.map(x=>({time:x.t/1000, open:x.o, high:x.h, low:x.l, close:x.c}));
+async function cargar(t){
+  try{
+    const v=await fetch("/velas?tf="+t).then(r=>r.json());
+    if(!v||v.length<2)return;
+    const velas=v.map(x=>({time:x.t/1000,open:x.o,high:x.h,low:x.l,close:x.c}));
     candles.setData(velas);
-
-    // EMA9 sobre historico
-    const ema = [];
-    for (let i=8; i<velas.length; i++) {
-      const sl = velas.slice(i-8,i+1).map(x=>x.close);
-      ema.push({time:velas[i].time, value:sl.reduce((a,b)=>a+b,0)/9});
+    const ema=[];
+    for(let i=8;i<velas.length;i++){
+      const sl=velas.slice(i-8,i+1).map(x=>x.close);
+      ema.push({time:velas[i].time,value:sl.reduce((a,b)=>a+b,0)/9});
     }
     emaL.setData(ema);
-
-    // Centrar grafico desde el inicio del bot, no desde el inicio de los datos
-    if (inicioMs) {
-      const tfSeg = tfASegundos(t);
-      const inicioSeg = Math.floor(inicioMs/1000);
-      // Mostrar desde 10 velas antes del inicio del bot
-      const desde = inicioSeg - (tfSeg * 10);
-      const hasta = Math.floor(Date.now()/1000) + tfSeg * 5;
-      chart.timeScale().setVisibleRange({ from: desde, to: hasta });
+    // Centrar desde inicio del bot
+    if(inicioMs){
+      const ts=tfSeg(t);
+      chart.timeScale().setVisibleRange({
+        from:Math.floor(inicioMs/1000)-(ts*10),
+        to:Math.floor(Date.now()/1000)+(ts*5)
+      });
     } else {
       chart.timeScale().fitContent();
     }
-
-    // Redibujar marcas al cambiar timeframe
-    actualizarMarcas(null, true);
-
-    // WebSocket Binance tiempo real
-    const sim = "solusdt";
-    const wi  = t==="4h"?"4h":t==="1h"?"1h":t==="15m"?"15m":t==="5m"?"5m":"1m";
-    wsVela = new WebSocket(`wss://stream.binance.com:9443/ws/${sim}@kline_${wi}`);
-
-    wsVela.onopen = () => {
-      document.getElementById("ws-status").textContent = "● en vivo";
-      document.getElementById("ws-status").style.color = "#00e676";
+    redibujarMarcas();
+    // WebSocket Bitget para tiempo real
+    const wi=t==="4h"?"4H":t==="1h"?"1H":t==="15m"?"15m":t==="5m"?"5m":"1m";
+    // Usamos Binance WS para el grafico (solo datos publicos de precios, no trading)
+    const sim="solusdt";
+    wsVela=new WebSocket(`wss://stream.binance.com:9443/ws/${sim}@kline_${wi}`);
+    wsVela.onopen=()=>{
+      document.getElementById("ws-status").textContent="● en vivo";
+      document.getElementById("ws-status").style.color="#00e676";
     };
-    wsVela.onmessage = (evt) => {
-      const k = JSON.parse(evt.data).k;
-      const vela = {
-        time:  k.t/1000,
-        open:  parseFloat(k.o),
-        high:  parseFloat(k.h),
-        low:   parseFloat(k.l),
-        close: parseFloat(k.c),
-      };
-      candles.update(vela);
-      emaL.update({time:vela.time, value:vela.close});
+    wsVela.onmessage=(evt)=>{
+      const k=JSON.parse(evt.data).k;
+      candles.update({time:k.t/1000,open:parseFloat(k.o),high:parseFloat(k.h),low:parseFloat(k.l),close:parseFloat(k.c)});
+      emaL.update({time:k.t/1000,value:parseFloat(k.c)});
     };
-    wsVela.onerror = () => {
-      document.getElementById("ws-status").textContent = "● error";
-      document.getElementById("ws-status").style.color = "#ff1744";
+    wsVela.onerror=()=>{
+      document.getElementById("ws-status").textContent="● sin WS (actualizando cada 2s)";
+      document.getElementById("ws-status").style.color="#ffd740";
     };
-    wsVela.onclose = () => {
-      document.getElementById("ws-status").textContent = "● reconectando";
-      document.getElementById("ws-status").style.color = "#ffd740";
-      setTimeout(()=>{ if(tf===t) cargarYConectar(t); }, 3000);
+    wsVela.onclose=()=>{
+      setTimeout(()=>{if(tf===t)cargar(t);},3000);
     };
-
-  } catch(e) { console.log("Error:", e); }
+  }catch(e){console.log("Error cargando:",e);}
 }
 
-let ultimasMarcasData = [];
-function actualizarMarcas(marcas, forzar) {
-  if (marcas) ultimasMarcasData = marcas;
-  if (!ultimasMarcasData || (!forzar && ultimasMarcasData.length === uM)) return;
-  uM = ultimasMarcasData.length;
-  const tfSeg = tfASegundos(tf);
-  // Alinea cada marca al inicio de la vela correspondiente en el timeframe actual
-  candles.setMarkers(ultimasMarcasData.map(x => ({
-    time: Math.floor(x.t/1000/tfSeg)*tfSeg,
-    position: x.tipo==="compra"?"belowBar":"aboveBar",
-    color: x.tipo==="compra"?"#00e676":"#ff1744",
-    shape: x.tipo==="compra"?"arrowUp":"arrowDown",
-    text:  x.tipo==="compra"?"BUY":"SELL",
+let marcasData=[];
+function redibujarMarcas(){
+  if(!marcasData.length)return;
+  const ts=tfSeg(tf);
+  candles.setMarkers(marcasData.map(x=>({
+    time:Math.floor(x.t/1000/ts)*ts,
+    position:x.tipo==="compra"?"belowBar":"aboveBar",
+    color:x.tipo==="compra"?"#00e676":"#ff1744",
+    shape:x.tipo==="compra"?"arrowUp":"arrowDown",
+    text:x.tipo==="compra"?"BUY":"SELL",
   })));
 }
 
 setInterval(()=>{
-  if (!iTs) return;
-  const s = Math.floor((Date.now()-iTs)/1000);
-  document.getElementById("uptime").textContent =
+  if(!iTs)return;
+  const s=Math.floor((Date.now()-iTs)/1000);
+  document.getElementById("uptime").textContent=
     String(Math.floor(s/3600)).padStart(2,"0")+":"+
     String(Math.floor((s%3600)/60)).padStart(2,"0")+":"+
     String(s%60).padStart(2,"0");
@@ -309,44 +294,44 @@ function s(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
 
 async function upd(){
   try{
-    const d = await fetch("/estado").then(r=>r.json());
-
-    if (!iTs) {
-      iTs = new Date(d.inicio_ts).getTime();
-      inicioMs = d.inicio_ms || iTs;
-      cargarYConectar(tf);
+    const d=await fetch("/estado").then(r=>r.json());
+    if(!iTs){
+      iTs=new Date(d.inicio_ts).getTime();
+      inicioMs=d.inicio_ms||iTs;
+      cargar(tf);
     }
 
-    const pr=d.precio, cap=d.capital, ci=d.capital_inicio;
-    const benef=cap-ci, pct=((cap/ci)-1)*100, com=d.comisiones_total||0, neto=benef-com;
+    // Modo badge
+    const mb=document.getElementById("modo-badge");
+    if(d.modo==="futuros"){mb.className="modo-badge modo-futuros";mb.textContent="FUTUROS";}
+    else{mb.className="modo-badge modo-spot";mb.textContent="SPOT";}
+
+    const pr=d.precio,cap=d.capital,ci=d.capital_inicio;
+    const benef=cap-ci,pct=((cap/ci)-1)*100,com=d.comisiones_total||0,neto=benef-com;
 
     s("precio",pr.toFixed(2));
     s("pmax",d.precio_max>0?d.precio_max.toFixed(2):"-");
     s("pmin",d.precio_min<9999999?d.precio_min.toFixed(2):"-");
-    s("ops-hoy",d.ops_hoy||0); s("ops-total",d.ops_total||0);
+    s("ops-hoy",d.ops_hoy||0);s("ops-total",d.ops_total||0);
 
     s("balance",cap.toFixed(2)+" USDT");
     document.getElementById("balance").className="cv "+(pct>=0?"g":"r");
     s("bpct",(pct>=0?"+":"")+pct.toFixed(3)+"%");
-
     s("benef",(benef>=0?"+":"")+benef.toFixed(3)+" USDT");
     document.getElementById("benef").className="cv "+(benef>=0?"g":"r");
     s("bpct2",(pct>=0?"+":"")+pct.toFixed(3)+"%");
-
-    s("com","-"+com.toFixed(3)+" USDT"); s("cv2","-"+com.toFixed(3)+" USDT");
+    s("com","-"+com.toFixed(3)+" USDT");s("cv2","-"+com.toFixed(3)+" USDT");
     s("neto",(neto>=0?"+":"")+neto.toFixed(3)+" USDT");
     document.getElementById("neto").className="cv "+(neto>=0?"g":"r");
     s("nv",(neto>=0?"+":"")+neto.toFixed(3)+" USDT");
     document.getElementById("nv").className="iv "+(neto>=0?"g":"r");
 
-    const t=d.tendencia; s("tend",t);
+    const t=d.tendencia;s("tend",t);
     document.getElementById("tend").className="cv "+(t==="ALCISTA"?"g":t==="BAJISTA"?"r":"y");
-
     const rsi=d.rsi;
     s("rsi-c",rsi.toFixed(1));
     document.getElementById("rsi-c").className="cv "+(rsi>65?"r":rsi<35?"g":"y");
     s("rsi-s",rsi>65?"Sobrecomprado":rsi<35?"Sobrevendido":"Neutral");
-
     const ops=d.operaciones||[];
     s("nops",ops.length);
     const g=ops.filter(o=>o.resultado>0).length;
@@ -358,13 +343,13 @@ async function upd(){
     s("stime","Actualizado: "+new Date().toLocaleTimeString());
 
     if(d.en_posicion){
-      document.getElementById("pbadge").className="badge bon"; s("pbadge","COMPRADO");
-      s("pe",d.precio_entrada.toFixed(3)); s("pv2",d.valor_posicion.toFixed(2)+" USDT");
+      document.getElementById("pbadge").className="badge bon";s("pbadge","COMPRADO");
+      s("pe",d.precio_entrada.toFixed(3));s("pv2",d.valor_posicion.toFixed(2)+" USDT");
       const pp=d.pct_posicion;
       s("ppct",(pp>=0?"+":"")+pp.toFixed(3)+"%");
       document.getElementById("ppct").className="pv "+(pp>=0?"g":"r");
       s("pcant",d.cantidad_sol.toFixed(4)+" SOL");
-      s("psl",d.stop_loss.toFixed(3)); s("ptp",d.take_profit.toFixed(3));
+      s("psl",d.stop_loss.toFixed(3));s("ptp",d.take_profit.toFixed(3));
       document.getElementById("pw").style.display="block";
       const rng=d.take_profit-d.stop_loss;
       const av=Math.max(2,Math.min(98,((pr-d.stop_loss)/rng)*100));
@@ -374,10 +359,10 @@ async function upd(){
       s("psl2","SL "+d.stop_loss.toFixed(3));
       s("pp2",pr.toFixed(2));
       s("ptp2","TP "+d.take_profit.toFixed(3));
-    } else {
-      document.getElementById("pbadge").className="badge boff"; s("pbadge","ESPERANDO");
+    }else{
+      document.getElementById("pbadge").className="badge boff";s("pbadge","ESPERANDO");
       ["pe","pv2","pcant","psl","ptp"].forEach(id=>s(id,"-"));
-      s("ppct","-"); document.getElementById("ppct").className="pv m";
+      s("ppct","-");document.getElementById("ppct").className="pv m";
       document.getElementById("pw").style.display="none";
     }
 
@@ -388,11 +373,12 @@ async function upd(){
     s("mv",(macd>=0?"+":"")+macd.toFixed(4));
     document.getElementById("mv").className="iv "+(macd>=0?"g":"r");
     document.getElementById("mb").style.cssText="width:"+Math.min(100,Math.abs(macd)*600)+"%;background:"+(macd>=0?"#00e676":"#ff1744");
-    s("ev",d.ema9.toFixed(2)); s("ci",ci.toFixed(2)+" USDT");
+    s("ev",d.ema9.toFixed(2));s("ci",ci.toFixed(2)+" USDT");
 
-    // Marcas: se redibujan solo cuando hay nuevas
-    if (d.marcas && d.marcas.length !== uM) {
-      actualizarMarcas(d.marcas, false);
+    if(d.marcas&&d.marcas.length!==uM){
+      uM=d.marcas.length;
+      marcasData=d.marcas;
+      redibujarMarcas();
     }
 
     if(JSON.stringify(d.log)!==JSON.stringify(uLog)){
@@ -411,21 +397,34 @@ async function upd(){
         </div>`
       ).join("");
     }
-  } catch(e) {
+  }catch(e){
     s("stext","Error de conexion");
     document.getElementById("sdot").style.background="#ff1744";
   }
 }
-
-ic();
-upd();
-setInterval(upd, 2000);
+ic();upd();setInterval(upd,2000);
 </script>
 </body>
 </html>"""
 
-app      = Flask(__name__)
-exchange = ccxt.binance()
+app = Flask(__name__)
+
+# ── Inicializar exchange Bitget ───────────────────────
+def crear_exchange():
+    if MODO == "futuros":
+        # Para futuros necesitas API keys de Bitget
+        # Ponlas aqui o como variables de entorno en Railway
+        return ccxt.bitget({
+            "apiKey":    os.environ.get("BITGET_API_KEY", ""),
+            "secret":    os.environ.get("BITGET_SECRET", ""),
+            "password":  os.environ.get("BITGET_PASSWORD", ""),  # Bitget necesita passphrase
+            "options":   {"defaultType": "swap"},  # swap = futuros perpetuos
+        })
+    else:
+        # Spot no necesita API key para leer precios publicos
+        return ccxt.bitget()
+
+exchange = crear_exchange()
 ultimo_cierre = 0
 
 @app.route("/")
@@ -439,9 +438,12 @@ def get_velas():
     tf = freq.args.get("tf","1m")
     if tf not in {"1m","3m","5m","15m","1h","4h","1d"}: tf="1m"
     try:
-        v = exchange.fetch_ohlcv(SIMBOLO, tf, limit=500)
+        # Para el grafico usamos datos publicos de Bitget
+        ex = ccxt.bitget()
+        v  = ex.fetch_ohlcv("SOL/USDT", tf, limit=500)
         return jsonify([{"t":x[0],"o":x[1],"h":x[2],"l":x[3],"c":x[4]} for x in v])
-    except: return jsonify([])
+    except Exception as e:
+        return jsonify([])
 
 def log(msg):
     hora  = datetime.now().strftime("%H:%M:%S")
@@ -450,8 +452,13 @@ def log(msg):
     estado["log"].insert(0, linea)
     if len(estado["log"]) > 200: estado["log"].pop()
 
+def get_precio():
+    ticker = exchange.fetch_ticker("SOL/USDT")
+    return ticker["last"]
+
 def get_ind():
-    v  = exchange.fetch_ohlcv(SIMBOLO, "1m", limit=60)
+    ex = ccxt.bitget()
+    v  = ex.fetch_ohlcv("SOL/USDT", "1m", limit=60)
     df = pd.DataFrame(v, columns=["timestamp","open","high","low","close","volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     dc = df.iloc[:-1].copy()
@@ -468,7 +475,7 @@ def get_ind():
 
 def run_bot():
     global ultimo_cierre
-    log("Bot SOL activo | SL:0.6% TP:1.2% | http://localhost:" + str(PUERTO))
+    log(f"Bot SOL/USDT via Bitget | Modo: {MODO} | SL:0.6% TP:1.2% | http://localhost:{PUERTO}")
     ultimo_dia = datetime.now().date()
 
     while True:
@@ -495,7 +502,7 @@ def run_bot():
             elif c["ema9"] < c["ema21"] < c["ema50"]: estado["tendencia"] = "BAJISTA"
             else:                                       estado["tendencia"] = "NEUTRAL"
 
-            precio = exchange.fetch_ticker(SIMBOLO)["last"]
+            precio = get_precio()
             estado["precio"]     = precio
             estado["precio_max"] = max(estado["precio_max"], precio)
             estado["precio_min"] = min(estado["precio_min"], precio)
@@ -574,7 +581,6 @@ def run_bot():
 
 threading.Thread(target=run_bot, daemon=True).start()
 
-# En local abre el navegador automaticamente
 if os.environ.get("PORT") is None:
     import webbrowser
     time.sleep(2)
