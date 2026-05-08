@@ -1,5 +1,4 @@
-ccxt
+requests
 pandas
-ta
 flask
 gunicorn
