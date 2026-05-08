@@ -44,30 +44,49 @@ estado = {
 BASE = "https://api.bitget.com"
 
 def get_precio():
+    # Fuente 1: Bitget futuros
     try:
         r = requests.get(f"{BASE}/api/mix/v1/market/ticker?symbol={SIMBOLO}", timeout=5)
         d = r.json()
-        return float(d["data"]["last"])
-    except:
-        try:
-            r = requests.get(f"{BASE}/api/spot/v1/market/ticker?symbol=SOLUSDT_SPBL", timeout=5)
-            return float(r.json()["data"]["close"])
-        except:
-            return 0.0
+        if d.get("data") and d["data"].get("last"):
+            return float(d["data"]["last"])
+    except: pass
+    # Fuente 2: Bitget spot
+    try:
+        r = requests.get(f"{BASE}/api/spot/v1/market/ticker?symbol=SOLUSDT_SPBL", timeout=5)
+        d = r.json()
+        if d.get("data") and d["data"].get("close"):
+            return float(d["data"]["close"])
+    except: pass
+    # Fuente 3: CoinGecko
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", timeout=8)
+        return float(r.json()["solana"]["usd"])
+    except: pass
+    # Fuente 4: Kraken
+    try:
+        r = requests.get("https://api.kraken.com/0/public/Ticker?pair=SOLUSD", timeout=5)
+        return float(r.json()["result"]["SOLUSD"]["c"][0])
+    except: pass
+    return 0.0
 
 def get_velas_api(tf="1m", limit=200):
     try:
         tf_map = {"1m":"1m","5m":"5m","15m":"15m","1h":"1H","4h":"4H"}
         gran = tf_map.get(tf, "1m")
-        r = requests.get(
-            f"{BASE}/api/mix/v1/market/candles",
-            params={"symbol":SIMBOLO,"granularity":gran,"limit":limit},
-            timeout=8
-        )
+        r = requests.get(f"{BASE}/api/mix/v1/market/candles", params={"symbol":SIMBOLO,"granularity":gran,"limit":limit}, timeout=8)
         data = r.json().get("data", [])
-        return [{"t":int(x[0]),"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in data]
-    except:
-        return []
+        if data:
+            return [{"t":int(x[0]),"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in data]
+    except: pass
+    try:
+        tf_kr = {"1m":1,"5m":5,"15m":15,"1h":60,"4h":240}
+        minutos = tf_kr.get(tf, 1)
+        r = requests.get(f"https://api.kraken.com/0/public/OHLC?pair=SOLUSD&interval={minutos}&count={limit}", timeout=8)
+        data = r.json()["result"]["SOLUSD"]
+        return [{"t":int(x[0])*1000,"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[6])} for x in data]
+    except: pass
+    return []
 
 def get_rsi(periodo=14):
     try:
